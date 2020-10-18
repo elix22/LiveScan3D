@@ -20,6 +20,7 @@
 #include "calibration.h"
 #include "utils.h"
 #include "KinectCapture.h"
+#include "frameFileWriterReader.h"
 #include <thread>
 #include <mutex>
 
@@ -52,15 +53,18 @@ private:
 	bool m_bConfirmCaptured;
 	bool m_bConfirmCalibrated;
 	bool m_bShowDepth;
-	
+	bool m_bFrameCompression;
+	int m_iCompressionLevel;
+
+	FrameFileWriterReader m_framesFileWriterReader;
+
+
 	SocketClient *m_pClientSocket;
 	std::vector<float> m_vBounds;
 
 	std::vector<Point3s> m_vLastFrameVertices;
 	std::vector<RGB> m_vLastFrameRGB;
 	std::vector<Body> m_vLastFrameBody;
-	std::vector<std::vector<Point3s>> m_vGatheredVertices;
-	std::vector<std::vector<RGB>> m_vGatheredRGBPoints;
 
 	HWND m_hWnd;
     INT64 m_nLastCounter;

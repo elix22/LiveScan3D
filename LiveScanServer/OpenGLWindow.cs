@@ -18,6 +18,7 @@ using System.Linq;
 using System.Text;
 using System.Threading.Tasks;
 using System.Globalization;
+using System.Windows.Forms.Layout;
 
 using System.Diagnostics;
 
@@ -32,7 +33,7 @@ enum ECameraMode
 
 namespace KinectServer
 {
-    class OpenGLWindow : GameWindow
+    public class OpenGLWindow : GameWindow
     {
         int PointCount;
         int LineCount;
@@ -43,6 +44,8 @@ namespace KinectServer
 
         static float KEYBOARD_MOVE_SPEED = 0.01f;
 
+        bool IsFullscreen = false;
+
         static float MOUSE_ORBIT_SPEED = 0.30f;     // 0 = SLOWEST, 1 = FASTEST
         static float MOUSE_DOLLY_SPEED = 0.2f;     // same as above...but much more sensitive
         static float MOUSE_TRACK_SPEED = 0.003f;    // same as above...but much more sensitive
@@ -51,6 +54,8 @@ namespace KinectServer
         float g_pitch;
         float dx = 0.0f;
         float dy = 0.0f;
+
+        byte brightnessModifier = 0;
 
         Vector2 MousePrevious = new Vector2();
         Vector2 MouseCurrent = new Vector2();
@@ -66,6 +71,8 @@ namespace KinectServer
         DateTime tFPSUpdateTimer = DateTime.Now;
         int nTickCounter = 0;
 
+        bool bDrawMarkings = true;
+
         // this struct is used for drawing
         struct VertexC4ubV3f
         {
@@ -79,7 +86,7 @@ namespace KinectServer
 
         /// <summary>Creates a 800x600 window with the specified title.</summary>
         public OpenGLWindow()
-            : base(800, 600)
+            : base(800, 600, GraphicsMode.Default, "LiveScan")
         {
             this.VSync = VSyncMode.Off;
             MouseUp += new EventHandler<MouseButtonEventArgs>(OnMouseButtonUp);
@@ -88,7 +95,7 @@ namespace KinectServer
             MouseWheel += new EventHandler<MouseWheelEventArgs>(OnMouseWheelChanged);
 
             KeyDown += new EventHandler<KeyboardKeyEventArgs>(OnKeyDown);
-
+            
             cameraPosition[0] = 0;
             cameraPosition[1] = 0;
             cameraPosition[2] = 1.0f;
@@ -102,9 +109,59 @@ namespace KinectServer
             nTickCounter++;
         }
 
+        public void ToggleFullscreen()
+        {
+            if (IsFullscreen)
+            {
+                WindowBorder = WindowBorder.Resizable;
+                WindowState = WindowState.Normal;
+                ClientSize = new System.Drawing.Size(800, 600);
+                CursorVisible = true;
+            }
+            else
+            {
+                CursorVisible = false;
+                WindowBorder = WindowBorder.Hidden;
+                WindowState = WindowState.Fullscreen;
+            }
+            IsFullscreen = !IsFullscreen;
+        }
+
         void OnKeyDown(object sender, KeyboardKeyEventArgs e)
         {
-//            e.Key
+
+            var keyboard = e.Keyboard;
+            if (keyboard[Key.Escape])
+            {
+                Exit();
+            }
+            if (keyboard[Key.Plus])
+            {
+                PointSize += 0.1f;
+                GL.PointSize(PointSize);
+            }
+            if (keyboard[Key.Minus])
+            {
+                if (PointSize != 0)
+                    PointSize -= 0.1f;
+                GL.PointSize(PointSize);
+            }
+            if (keyboard[Key.W])
+                cameraPosition[2] -= KEYBOARD_MOVE_SPEED;
+            if (keyboard[Key.A])
+                cameraPosition[0] -= KEYBOARD_MOVE_SPEED;
+            if (keyboard[Key.S])
+                cameraPosition[2] += KEYBOARD_MOVE_SPEED;
+            if (keyboard[Key.D])
+                cameraPosition[0] += KEYBOARD_MOVE_SPEED;
+            if (keyboard[Key.F])
+                ToggleFullscreen();
+            if (keyboard[Key.M])
+                bDrawMarkings = !bDrawMarkings;
+            if (keyboard[Key.O])
+                brightnessModifier = (byte)Math.Max(0, brightnessModifier - 10);
+            if (keyboard[Key.P])
+                brightnessModifier = (byte)Math.Min(255, brightnessModifier + 10);
         }
 
         /// <summary>Load resources here.</summary>
@@ -265,70 +322,56 @@ namespace KinectServer
                 nTickCounter = 0;
             }
 
-            var keyboard = OpenTK.Input.Keyboard.GetState();
-            if (keyboard[Key.Escape])
-            {
-                Exit();
-            }
-            if (keyboard[Key.Plus])
-            {
-                PointSize += 0.1f;
-                GL.PointSize(PointSize);
-            }
-            if (keyboard[Key.Minus])
-            {
-                if (PointSize != 0)
-                    PointSize -= 0.1f;
-                GL.PointSize(PointSize);
-            }
-            if (keyboard[Key.W])
-                cameraPosition[2] -= KEYBOARD_MOVE_SPEED;
-            if (keyboard[Key.A])
-                cameraPosition[0] -= KEYBOARD_MOVE_SPEED;
-            if (keyboard[Key.S])
-                cameraPosition[2] += KEYBOARD_MOVE_SPEED;
-            if (keyboard[Key.D])
-                cameraPosition[0] += KEYBOARD_MOVE_SPEED;
 
             lock (vertices)
             {
-                bool bShowSkeletons = settings.bShowSkeletons;
-
-                PointCount = vertices.Count / 3;
-                //bounding box
-                LineCount = 12;
-                //markers
-                LineCount += settings.lMarkerPoses.Count * 3;
-                //cameras
-                LineCount += cameraPoses.Count * 3;
-                if (bShowSkeletons)
-                    LineCount += 24 * bodies.Count;
-
-                VBO = new VertexC4ubV3f[PointCount + 2 * LineCount];
-
-                for (int i = 0; i < PointCount; i++)
+                lock (settings)
                 {
-                    VBO[i].R = (byte)colors[i * 3];
-                    VBO[i].G = (byte)colors[i * 3 + 1];
-                    VBO[i].B = (byte)colors[i * 3 + 2];
-                    VBO[i].A = 255;
-                    VBO[i].Position.X = vertices[i * 3];
-                    VBO[i].Position.Y = vertices[i * 3 + 1];
-                    VBO[i].Position.Z = vertices[i * 3 + 2];
-                }
+                    bool bShowSkeletons = settings.bShowSkeletons;
 
-                int iCurLineCount = 0;
-                iCurLineCount += AddBoundingBox(PointCount + 2 * iCurLineCount);
-                for (int i = 0; i < settings.lMarkerPoses.Count; i++)
-                {
-                    iCurLineCount += AddMarker(PointCount + 2 * iCurLineCount, settings.lMarkerPoses[i].pose);
+                    PointCount = vertices.Count / 3;
+                    LineCount = 0;
+                    if (bDrawMarkings)
+                    {
+                        //bounding box
+                        LineCount += 12;
+                        //markers
+                        LineCount += settings.lMarkerPoses.Count * 3;
+                        //cameras
+                        LineCount += cameraPoses.Count * 3;
+                        if (bShowSkeletons)
+                            LineCount += 24 * bodies.Count;
+                    }
+
+                    VBO = new VertexC4ubV3f[PointCount + 2 * LineCount];
+
+                    for (int i = 0; i < PointCount; i++)
+                    {
+                        VBO[i].R = (byte)Math.Max(0, Math.Min(255, (colors[i * 3] + brightnessModifier)));
+                        VBO[i].G = (byte)Math.Max(0, Math.Min(255, (colors[i * 3 + 1] + brightnessModifier)));
+                        VBO[i].B = (byte)Math.Max(0, Math.Min(255, (colors[i * 3 + 2] + brightnessModifier)));
+                        VBO[i].A = 255;
+                        VBO[i].Position.X = vertices[i * 3];
+                        VBO[i].Position.Y = vertices[i * 3 + 1];
+                        VBO[i].Position.Z = vertices[i * 3 + 2];
+                    }
+
+                    if (bDrawMarkings)
+                    {
+                        int iCurLineCount = 0;
+                        iCurLineCount += AddBoundingBox(PointCount + 2 * iCurLineCount);
+                        for (int i = 0; i < settings.lMarkerPoses.Count; i++)
+                        {
+                            iCurLineCount += AddMarker(PointCount + 2 * iCurLineCount, settings.lMarkerPoses[i].pose);
+                        }
+                        for (int i = 0; i < cameraPoses.Count; i++)
+                        {
+                            iCurLineCount += AddCamera(PointCount + 2 * iCurLineCount, cameraPoses[i]);
+                        }
+                        if (bShowSkeletons)
+                            iCurLineCount += AddBodies(PointCount + 2 * iCurLineCount);
+                    }
                 }
-                for (int i = 0; i < cameraPoses.Count; i++)
-                {
-                    iCurLineCount += AddCamera(PointCount + 2 * iCurLineCount, cameraPoses[i]);
-                }
-                if (bShowSkeletons)
-                    iCurLineCount += AddBodies(PointCount + 2 * iCurLineCount);
             }
         }
 

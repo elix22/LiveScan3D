@@ -30,6 +30,8 @@ namespace KinectServer
         public KinectSettings oSettings;
         public KinectServer oServer;
 
+        bool bFormLoaded = false;
+
         public SettingsForm()
         {
             InitializeComponent();
@@ -54,6 +56,8 @@ namespace KinectServer
             chBodyData.Checked = oSettings.bStreamOnlyBodies;
             chSkeletons.Checked = oSettings.bShowSkeletons;
 
+            cbCompressionLevel.SelectedText = oSettings.iCompressionLevel.ToString();
+
             chMerge.Checked = oSettings.bMergeScansForSave;
             txtICPIters.Text = oSettings.nNumICPIterations.ToString();
             txtRefinIters.Text = oSettings.nNumRefineIters.ToString();
@@ -67,11 +71,14 @@ namespace KinectServer
                 rBinaryPly.Checked = false;
                 rAsciiPly.Checked = true;
             }
+
+            bFormLoaded = true;
         }
 
         void UpdateClients()
         {
-            oServer.SendSettings();
+            if (bFormLoaded)
+                oServer.SendSettings();
         }
 
         void UpdateMarkerFields()
@@ -315,6 +322,23 @@ namespace KinectServer
         private void chSkeletons_CheckedChanged(object sender, EventArgs e)
         {
             oSettings.bShowSkeletons = chSkeletons.Checked;
+        }
+
+        private void cbCompressionLevel_SelectedIndexChanged(object sender, EventArgs e)
+        {
+            int index = cbCompressionLevel.SelectedIndex;
+            if (index == 0)
+                oSettings.iCompressionLevel = 0;
+            else if (index == 2)
+                oSettings.iCompressionLevel = 2;
+            else
+            {
+                string value = cbCompressionLevel.SelectedItem.ToString();
+                bool tryParse = Int32.TryParse(value, out oSettings.iCompressionLevel);
+                if (!tryParse)
+                    oSettings.iCompressionLevel = 0;
+            }
+            UpdateClients();
         }
     }
 }

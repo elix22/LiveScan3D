@@ -19,6 +19,7 @@
 #include <chrono>
 #include <strsafe.h>
 #include <fstream>
+#include "zstd.h"
 
 std::mutex m_mSocketThreadMutex;
 
@@ -57,6 +58,8 @@ LiveScanClient::LiveScanClient() :
 	m_bConfirmCalibrated(false),
 	m_bShowDepth(false),
 	m_bSocketThread(true),
+	m_bFrameCompression(true),
+	m_iCompressionLevel(2),
 	m_pClientSocket(NULL),
 	m_nFilterNeighbors(10),
 	m_fFilterThreshold(0.01f)
@@ -75,6 +78,8 @@ LiveScanClient::LiveScanClient() :
 	m_vBounds.push_back(0.5);
 	m_vBounds.push_back(0.5);
 	m_vBounds.push_back(0.5);
+
+	calibration.LoadCalibration();
 }
   
 LiveScanClient::~LiveScanClient()
@@ -130,7 +135,7 @@ int LiveScanClient::Run(HINSTANCE hInstance, int nCmdShow)
     MSG       msg = {0};
     WNDCLASS  wc;
 
-    // Dialog custom window class
+	// Dialog custom window class
     ZeroMemory(&wc, sizeof(wc));
     wc.style         = CS_HREDRAW | CS_VREDRAW;
     wc.cbWndExtra    = DLGWINDOWEXTRA;
@@ -180,6 +185,8 @@ int LiveScanClient::Run(HINSTANCE hInstance, int nCmdShow)
     return static_cast<int>(msg.wParam);
 }
 
+
+
 void LiveScanClient::UpdateFrame()
 {
 	if (!pCapture->bInitialized)
@@ -200,8 +207,7 @@ void LiveScanClient::UpdateFrame()
 
 		if (m_bCaptureFrame)
 		{
-			m_vGatheredVertices.push_back(m_vLastFrameVertices);
-			m_vGatheredRGBPoints.push_back(m_vLastFrameRGB);
+			m_framesFileWriterReader.writeFrame(m_vLastFrameVertices, m_vLastFrameRGB);
 			m_bConfirmCaptured = true;
 			m_bCaptureFrame = false;
 		}
@@ -323,8 +329,6 @@ LRESULT CALLBACK LiveScanClient::DlgProc(HWND hWnd, UINT message, WPARAM wParam,
 				}
 				else
 				{
-					m_vGatheredVertices.clear();
-					m_vGatheredRGBPoints.clear();
 					try
 					{
 						char address[20];
@@ -332,6 +336,9 @@ LRESULT CALLBACK LiveScanClient::DlgProc(HWND hWnd, UINT message, WPARAM wParam,
 						m_pClientSocket = new SocketClient(address, 48001);
 
 						m_bConnected = true;
+						if (calibration.bCalibrated)
+							m_bConfirmCalibrated = true;
+
 						SetDlgItemTextA(m_hWnd, IDC_BUTTON_CONNECT, "Disconnect");
 						//Clear the status bar so that the "Failed to connect..." disappears.
 						SetStatusMessage(L"", 1, true);
@@ -499,7 +506,14 @@ void LiveScanClient::HandleSocket()
 			}
 
 			m_bStreamOnlyBodies = (received[i] != 0);
-			i++;
+			i += 1;
+
+			m_iCompressionLevel = *(int*)(received.c_str() + i);
+			i += sizeof(int);
+			if (m_iCompressionLevel > 0)
+				m_bFrameCompression = true;
+			else
+				m_bFrameCompression = false;
 
 			//so that we do not lose the next character in the stream
 			i--;
@@ -510,18 +524,15 @@ void LiveScanClient::HandleSocket()
 			byteToSend = MSG_STORED_FRAME;
 			m_pClientSocket->SendBytes(&byteToSend, 1);
 
-			if (m_vGatheredRGBPoints.size() > 0)
-			{
-				SendFrame(m_vGatheredVertices[0], m_vGatheredRGBPoints[0], m_vLastFrameBody);
-
-				m_vGatheredRGBPoints.erase(m_vGatheredRGBPoints.begin(), m_vGatheredRGBPoints.begin() + 1);
-				m_vGatheredVertices.erase(m_vGatheredVertices.begin(), m_vGatheredVertices.begin() + 1);
-			}
-			else
+			vector<Point3s> points;
+			vector<RGB> colors; 
+			bool res = m_framesFileWriterReader.readFrame(points, colors);
+			if (res == false)
 			{
 				int size = -1;
 				m_pClientSocket->SendBytes((char*)&size, 4);
-			}
+			} else
+				SendFrame(points, colors, m_vLastFrameBody);
 		}
 		//send last frame
 		else if (received[i] == MSG_REQUEST_LAST_FRAME)
@@ -549,27 +560,12 @@ void LiveScanClient::HandleSocket()
 				i += sizeof(float);
 			}
 
-			for (int j = 0; j < 3; j++)
-			{
-				for (int k = 0; k < 3; k++)
-				{
-					calibration.cameraR[j][k] = *(float*)(received.c_str() + i);
-					i += sizeof(float);
-				}
-			}
-			for (int j = 0; j < 3; j++)
-			{
-				calibration.cameraT[j] = *(float*)(received.c_str() + i);
-				i += sizeof(float);
-			}
-
 			//so that we do not lose the next character in the stream
 			i--;
 		}
 		else if (received[i] == MSG_CLEAR_STORED_FRAMES)
 		{
-			m_vGatheredVertices.clear();
-			m_vGatheredRGBPoints.clear();
+			m_framesFileWriterReader.closeFileIfOpened();
 		}
 	}
 
@@ -582,7 +578,7 @@ void LiveScanClient::HandleSocket()
 
 	if (m_bConfirmCalibrated)
 	{
-		int size = 2 * (9 + 3) * sizeof(float) + sizeof(int) + 1;
+		int size = (9 + 3) * sizeof(float) + sizeof(int) + 1;
 		char *buffer = new char[size];
 		buffer[0] = MSG_CONFIRM_CALIBRATED;
 		int i = 1;
@@ -597,14 +593,6 @@ void LiveScanClient::HandleSocket()
 		i += 3 * sizeof(float);
 		memcpy(buffer + i, calibration.worldT.data(), 3 * sizeof(float));
 		i += 3 * sizeof(float);
-
-		memcpy(buffer + i, calibration.cameraR[0].data(), 3 * sizeof(float));
-		i += 3 * sizeof(float);
-		memcpy(buffer + i, calibration.cameraR[1].data(), 3 * sizeof(float));
-		i += 3 * sizeof(float);
-		memcpy(buffer + i, calibration.cameraR[2].data(), 3 * sizeof(float));
-		i += 3 * sizeof(float);
-		memcpy(buffer + i, calibration.cameraT.data(), 3 * sizeof(float));
 
 		m_pClientSocket->SendBytes(buffer, size);
 		m_bConfirmCalibrated = false;
@@ -629,12 +617,11 @@ void LiveScanClient::SendFrame(vector<Point3s> vertices, vector<RGB> RGB, vector
 		buffer[pos++] = RGB[i].rgbGreen;
 		buffer[pos++] = RGB[i].rgbBlue;
 
-
 		memcpy(buffer.data() + pos, ptr2, sizeof(short)* 3);
 		ptr2 += sizeof(short) * 3;
 		pos += sizeof(short) * 3;
 	}
-
+	
 	int nBodies = body.size();
 	size += sizeof(nBodies);
 	for (int i = 0; i < nBodies; i++)
@@ -682,9 +669,24 @@ void LiveScanClient::SendFrame(vector<Point3s> vertices, vector<RGB> RGB, vector
 		}
 	}
 
-	m_pClientSocket->SendBytes((char*)&size, sizeof(int));
-	m_pClientSocket->SendBytes(buffer.data(), size);
+	int iCompression = static_cast<int>(m_bFrameCompression);
 
+	if (m_bFrameCompression)
+	{
+		// *2, because according to zstd documentation, increasing the size of the output buffer above a 
+		// bound should speed up the compression.
+		int cBuffSize = ZSTD_compressBound(size) * 2;	
+		vector<char> compressedBuffer(cBuffSize);
+		int cSize = ZSTD_compress(compressedBuffer.data(), cBuffSize, buffer.data(), size, m_iCompressionLevel);
+		size = cSize; 
+		buffer = compressedBuffer;
+	}
+	char header[8];
+	memcpy(header, (char*)&size, sizeof(size));
+	memcpy(header + 4, (char*)&iCompression, sizeof(iCompression));
+
+	m_pClientSocket->SendBytes((char*)&header, sizeof(int) * 2);
+	m_pClientSocket->SendBytes(buffer.data(), size);
 }
 
 void LiveScanClient::StoreFrame(Point3f *vertices, Point2f *mapping, RGB *color, vector<Body> &bodies, BYTE* bodyIndex)
